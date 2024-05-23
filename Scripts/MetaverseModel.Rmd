@@ -1,0 +1,231 @@
+---
+title: "MetaverseModel"
+author: "treska"
+date: "2024-05-01"
+output: html_document
+---
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(readr)
+library(janitor)
+library(MASS)
+library(caret)
+library(earth)
+
+```
+```{r}
+# Load and clean the dataset
+metaverse_df <- read.csv("E:/UM/WQD7006 Machine Learning/group/processed_metaverse_dataset.csv", colClasses = c(sending_address = "character", receiving_address = "character")) %>% clean_names()
+
+head(metaverse_df)
+```
+
+
+```{r}
+metaverse_df <- metaverse_df %>% dplyr::select(-sending_address) %>% dplyr::select(-receiving_address) %>% dplyr::select(-risk_score)
+
+metaverse_df$anomaly <- as.factor(metaverse_df$anomaly)
+
+
+str(metaverse_df)
+summary(metaverse_df)
+```
+
+
+
+```{r}
+#data partition
+set.seed(123)  # Set a random seed for reproducibility
+train_index_metaverse_df <- createDataPartition(metaverse_df$anomaly, p = 0.7, list = FALSE)
+train_metaverse_df <- metaverse_df[train_index_metaverse_df, ]
+test_metaverse_df <- metaverse_df[-train_index_metaverse_df, ]
+
+```
+
+```{r}
+# One hot encoding using dummyVars
+encoder <- dummyVars(anomaly ~ ., data = train_metaverse_df)
+train_metaverse_df_OH <- data.frame(predict(encoder, newdata = train_metaverse_df))
+
+train_metaverse_df_OH$anomaly <- train_metaverse_df$anomaly
+head(train_metaverse_df_OH)
+
+```
+
+
+```{r}
+library(caret)
+library(xgboost)
+library(randomForest)
+```
+
+
+
+```{r}
+fitControl_class <- trainControl(method = 'cv', number = 5, classProbs = TRUE)
+```
+
+```{r}
+# Decision Tree
+model_dt <- train(anomaly ~ ., data = train_metaverse_df_OH, method = 'rpart', tuneLength = 5, trControl = fitControl_class)
+print(model_dt)
+
+```
+```{r}
+# Gradient Boosting Trees
+# model_xg <- train(anomaly ~ ., data = train_metaverse_df_OH, method = 'xgbTree', tuneLength = 5, trControl = fitControl_class)
+# print(model_xg)
+
+```
+
+
+```{r}
+# MARS(Multivariate Adaptive Regression Splines)
+model_mars <- train(anomaly ~ ., data = train_metaverse_df_OH, method = 'earth', tuneLength = 5, trControl = fitControl_class)
+print(model_mars)
+
+```
+
+```{r}
+
+
+library(randomForest)
+
+```
+
+
+```{r}
+# Random Forest
+model_rf <- train(anomaly ~ ., data = train_metaverse_df_OH, method = 'rf', trControl = fitControl_class, tuneLength = 5)
+print(model_rf)
+
+
+```
+
+```{r}
+# resample models
+models_list_class <- list(DT = model_dt, RF = model_rf, MARS = model_mars)
+
+models_compare_class <- resamples(models_list_class)
+
+```
+
+
+```{r}
+summary(models_compare_class)
+
+```
+
+
+```{r}
+#see accuracy across different cv
+library(gridExtra)
+plot1 <- plot(model_dt, main = 'Accuracy model_dt')
+plot2 <- plot(model_rf, main = 'Accuracy model_rf')
+plot3 <- plot(model_mars, main = 'Accuracy model_mars')
+grid.arrange(plot1, plot2, plot3, ncol = 3, padding = 0.5)
+
+```
+
+```{r}
+#see variable importance
+varimp_model_dt <- varImp(model_dt)
+varimp_model_rf <- varImp(model_rf)
+varimp_model_mars <- varImp(model_mars)
+plot(varimp_model_dt, main = 'Variable Importance varimp_model_dt')
+plot(varimp_model_rf, main = 'Variable Importance varimp_model_rf')
+plot(varimp_model_mars, main = 'Variable Importance varimp_model_mars')
+```
+```{r}
+# One test hot encoding using dummyVars
+encoder_test <- dummyVars(anomaly ~ ., data = test_metaverse_df)
+test_metaverse_df_OH <- data.frame(predict(encoder, newdata = test_metaverse_df))
+
+test_metaverse_df_OH$anomaly <- test_metaverse_df$anomaly
+head(test_metaverse_df_OH)
+```
+
+```{r}
+# set X and Y of test set
+x_test.df <- test_metaverse_df_OH %>% dplyr::select(-anomaly)
+y_test.df <- test_metaverse_df_OH %>% dplyr::select(anomaly)
+y_test.df <- as.factor(y_test.df$anomaly)
+
+```
+
+```{r}
+# predict decision tree
+predicted_model_dt <- predict(model_dt,x_test.df)
+
+confusionMatrix(reference = y_test.df, data = predicted_model_dt, mode='everything')
+```
+
+```{r}
+# predict random forest
+predicted_model_rf <- predict(model_rf,x_test.df)
+
+confusionMatrix(reference = y_test.df, data = predicted_model_rf, mode='everything')
+```
+```{r}
+# predict mars
+predicted_model_mars <- predict(model_mars,x_test.df)
+
+confusionMatrix(reference = y_test.df, data = predicted_model_mars, mode='everything')
+```
+
+```{r}
+#evaluate df using area under ROC
+library(pROC)
+test_target <- unclass(y_test.df)
+pred_target <- unclass(predicted_model_dt)
+
+auc_model <- roc(test_target,pred_target)
+
+print(auc_model)
+
+plot(auc_model, ylim=c(0,1),xlim=c(1,0), print.thres=TRUE, main=paste('AUC:',round(auc_model$auc[[1]],2)))
+abline(h=1,col='blue',lwd=2)
+abline(h=0,col='red',lwd=2)
+```
+
+```{r}
+#evaluate rf using area under ROC
+pred_target <- unclass(predicted_model_rf)
+
+auc_model <- roc(test_target,pred_target)
+
+print(auc_model)
+
+plot(auc_model, ylim=c(0,1),xlim=c(1,0), print.thres=TRUE, main=paste('AUC:',round(auc_model$auc[[1]],2)))
+abline(h=1,col='blue',lwd=2)
+abline(h=0,col='red',lwd=2)
+```
+
+```{r}
+#evaluate mars using area under ROC
+pred_target <- unclass(predicted_model_mars)
+
+auc_model <- roc(test_target,pred_target)
+
+print(auc_model)
+
+plot(auc_model, ylim=c(0,1),xlim=c(1,0), print.thres=TRUE, main=paste('AUC:',round(auc_model$auc[[1]],2)))
+abline(h=1,col='blue',lwd=2)
+abline(h=0,col='red',lwd=2)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
