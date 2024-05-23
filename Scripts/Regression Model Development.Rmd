@@ -1,0 +1,187 @@
+---
+title: "Regression Model Development"
+output:
+  html_document: default
+  pdf_document: default
+date: "2024-05-07"
+---
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(caret)
+library(rpart)
+library(janitor)
+library(caretEnsemble)
+```
+
+```{r}
+data = read.csv("processed metaverse dataset.csv", colClasses = c(sending_address = "character", receiving_address = "character"))
+
+
+data <- data %>% clean_names() %>%
+  select(-receiving_address) %>%
+  select(-sending_address) %>%
+  select(-anomaly) %>%
+  select(-new_transactions)
+
+head(data)
+
+
+
+```
+
+```{r}
+#data partition
+
+set.seed(123)  # Set a random seed for reproducibility
+train_index <- createDataPartition(data$risk_score, p = 0.7, list = FALSE)
+train_data <- data[train_index, ]
+test_data <- data[-train_index, ]
+
+
+```
+
+```{r}
+#preprocess
+
+preProcValues <- preProcess(train_data, method = c("YeoJohnson","center","scale"))
+
+train_data <- predict(preProcValues, train_data)
+
+test_data <- predict(preProcValues, test_data)
+
+
+
+#one hot encoding
+
+dummies_model <- dummyVars(~. , data = train_data)
+train_data_encoded <- predict(dummies_model, newdata = train_data) %>% as.data.frame() %>% clean_names()
+
+str(train_data_encoded)
+summary(train_data_encoded)
+
+```
+
+```{r}
+# setting paramater
+
+fitControl <- trainControl(method = 'cv', number = 3)
+
+# algorithmList <- c('rf','xgbLinear','lm')
+
+```
+
+```{r}
+#set x y
+
+X <- train_data_encoded %>% select(-risk_score)
+y <- train_data_encoded$risk_score
+
+```
+
+```{r}
+# train multivariate adaptive regression spline
+
+modelmars <- train(x = X, y = y, trControl = fitControl, method = 'earth')
+
+```
+
+```{r}
+#train linear
+
+modellm <- train(x = X, y = y, trControl = fitControl, method = 'lm')
+
+```
+
+```{r}
+#train xgboost
+
+modelxg <- train(x = X, y = y, trControl = fitControl, method = 'xgbLinear')
+
+```
+
+```{r}
+# resamples models for models performances
+
+models_list <- list(MARS = modelmars, XGBoost = modelxg, Linear = modellm)
+
+models_compare <- resamples(models_list)
+
+summary(models_compare)
+
+```
+
+```{r}
+#Visualise models training performances
+
+scales <- list(x = list(relation = "free"), y = list(relation = "free"))
+bwplot(models_compare, scales = scales)
+
+```
+
+```{r}
+# calculating RMSE for each models and visualise
+
+test_data_encoded <- predict(dummies_model, newdata = test_data) %>% as.data.frame() %>% clean_names()
+
+X_test <- test_data_encoded %>% select(-risk_score)
+y_test <- test_data_encoded$risk_score
+
+
+library(Metrics)
+library(ggplot2)
+
+calc_perf <- function(model){
+  
+  predicted <- predict(model, X_test) %>% as.vector()
+  MAE <- mae(predicted,y_test)
+  RMSE <- rmse(predicted,y_test)
+  
+  pred_df <- data.frame(Predicted = predicted, Observed = y_test)
+  pred_df_plot <- ggplot(pred_df, aes(x = Predicted, y = Observed)) + geom_point() + geom_abline(intercept = 0, slope = 1, color = "blue", size = 0.5)
+    
+  
+  print(RMSE)
+  print(pred_df_plot)
+  
+}
+
+
+lapply(models_list, calc_perf)
+
+
+
+```
+
+```{r}
+
+predicted <- predict(modelxg, X_test) %>% as.vector()
+
+lambda <- preProcValues$yj[['risk_score']]
+center<- preProcValues$mean[['risk_score']]
+scale <- preProcValues$std[['risk_score']]
+
+
+InvYeoJohnson <- function(x, lambda) {
+  if (lambda == 0) {
+    return(exp(x) - 1)
+  } else {
+    pos <- (x >= 0)
+    neg <- (x < 0)
+    y <- numeric(length(x))
+    y[pos] <- (x[pos] * lambda + 1)^(1 / lambda) - 1
+    y[neg] <- 1 - (-(x[neg]) * (2 - lambda) + 1)^(1 / (2 - lambda))
+    return(y)
+  }
+}
+
+reverse_center_scale <- function(x, center, scale) {
+  return((x * scale) + center)
+}
+
+predicted_actual_scale <- reverse_center_scale(predicted, center, scale)
+predicted_actual_scale <- InvYeoJohnson(predicted_actual_scale, lambda)
+predicted_actual_scale
+
+```
